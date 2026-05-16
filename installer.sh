@@ -1,14 +1,25 @@
 #!/bin/bash
-set -euo pipefail
 
 # ═══════════════════════════════════════════════════════════════
-# 👻 EXORCISE AI — Production Installer v1.0
+# 👻 EXORCISE AI — Production Installer v2.0
 # "Summon the answer. Banish the unknown."
-# Target: Ubuntu Server 24.04 LTS (fresh install)
+# Target: Ubuntu Server 24.04 LTS
 # ═══════════════════════════════════════════════════════════════
 
 LOG_FILE="/var/log/exorcise-install.log"
-APP_DIR="/var/www/exorcise-ai"
+APP_DIR=""
+DOMAIN=""
+SSL_EMAIL=""
+REPO_URL=""
+GIT_BRANCH="main"
+ADMIN_EMAIL=""
+ADMIN_PASSWORD=""
+RESEND_API_KEY=""
+GOOGLE_SHEET_ID=""
+GOOGLE_SA_JSON=""
+DB_NAME="exorcise_ai"
+DB_USER="exorcise_user"
+DB_PASSWORD=""
 
 # Colors
 RED='\033[0;31m'
@@ -19,254 +30,258 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# ── Helper Functions ──
-
-log() { echo -e "${CYAN}  → ${NC}$1"; }
-ok()  { echo -e "${GREEN}  ✓ Done:${NC} $1"; }
-fail() { echo -e "${RED}  ✗ FAILED:${NC} $1"; echo "  Check log: $LOG_FILE"; tail -20 "$LOG_FILE" 2>/dev/null; exit 1; }
-warn() { echo -e "${YELLOW}  ⚠ WARNING:${NC} $1"; }
+log()     { echo -e "${CYAN}  → ${NC}$1"; }
+ok()      { echo -e "${GREEN}  ✓${NC} $1"; }
+fail()    { echo -e "${RED}  ✗ FAILED:${NC} $1"; echo "  Check log: $LOG_FILE"; exit 1; }
+warn()    { echo -e "${YELLOW}  ⚠${NC} $1"; }
 section() { echo -e "\n${PURPLE}${BOLD}── $1 ──${NC}\n"; }
 
-run() {
-  log "$1"
-  eval "$2" >> "$LOG_FILE" 2>&1
-  if [ $? -ne 0 ]; then
-    fail "$1"
+# Safe command runner — logs output, doesn't die on failure
+run_cmd() {
+  local desc="$1"
+  shift
+  log "$desc"
+  if "$@" >> "$LOG_FILE" 2>&1; then
+    ok "$desc"
+    return 0
+  else
+    fail "$desc"
+    return 1
   fi
-  ok "$1"
 }
 
-spinner() {
-  local pid=$1; local delay=0.1; local spinstr='|/-\'
-  while kill -0 "$pid" 2>/dev/null; do
-    local temp=${spinstr#?}
-    printf " [%c] " "$spinstr"
-    spinstr=$temp${spinstr%"$temp"}
-    sleep $delay
-    printf "\b\b\b\b\b"
-  done
-  printf "    \b\b\b\b"
-}
-
-run_with_spinner() {
-  log "$1"
-  eval "$2" >> "$LOG_FILE" 2>&1 &
-  local pid=$!
-  spinner $pid
-  wait $pid
-  local status=$?
-  if [ $status -ne 0 ]; then
-    fail "$1"
-  fi
-  ok "$1"
-}
-
-# ── PHASE 0: Pre-flight Banner ──
-
+# ══════════════════════════════════════════════════════════════
+# PHASE 0: Banner & Pre-flight
+# ══════════════════════════════════════════════════════════════
 phase_preflight() {
   echo ""
   echo -e "${PURPLE}╔══════════════════════════════════════════════════════╗${NC}"
-  echo -e "${PURPLE}║${NC}          👻  ${BOLD}EXORCISE AI — INSTALLER v1.0${NC}           ${PURPLE}║${NC}"
+  echo -e "${PURPLE}║${NC}          👻  ${BOLD}EXORCISE AI — INSTALLER v2.0${NC}           ${PURPLE}║${NC}"
   echo -e "${PURPLE}║${NC}        ${CYAN}\"Summon the answer. Banish the unknown.\"${NC}      ${PURPLE}║${NC}"
   echo -e "${PURPLE}║${NC}                                                      ${PURPLE}║${NC}"
-  echo -e "${PURPLE}║${NC}   Ubuntu Server 24 LTS  •  Next.js  •  PostgreSQL   ${PURPLE}║${NC}"
+  echo -e "${PURPLE}║${NC}   Ubuntu 24 LTS  •  Next.js 14  •  PostgreSQL 16     ${PURPLE}║${NC}"
   echo -e "${PURPLE}╚══════════════════════════════════════════════════════╝${NC}"
   echo ""
 
-  # Root check
   if [ "$EUID" -ne 0 ]; then
-    echo -e "${RED}Error: This script must be run as root or with sudo.${NC}"
+    echo -e "${RED}Error: Run this script as root (sudo ./installer.sh)${NC}"
     exit 1
   fi
 
-  # OS check
-  if command -v lsb_release &>/dev/null; then
-    OS_VER=$(lsb_release -rs 2>/dev/null || echo "unknown")
-    if [[ "$OS_VER" != "24."* ]]; then
-      warn "Expected Ubuntu 24.x, detected: $OS_VER. Proceeding anyway."
-    fi
-  else
-    warn "Cannot detect OS version. Proceeding anyway."
-  fi
-
-  # Internet check
-  if ! ping -c1 -W3 google.com &>/dev/null; then
-    echo -e "${RED}Error: No internet connectivity detected. Exiting.${NC}"
+  if ! ping -c1 -W3 google.com > /dev/null 2>&1; then
+    echo -e "${RED}Error: No internet connectivity.${NC}"
     exit 1
   fi
+
+  mkdir -p "$(dirname "$LOG_FILE")"
+  echo "=== Exorcise AI Install — $(date) ===" > "$LOG_FILE"
   ok "Pre-flight checks passed"
 }
 
-# ── PHASE 1: Interactive Prompts ──
-
+# ══════════════════════════════════════════════════════════════
+# PHASE 1: Interactive Prompts
+# ══════════════════════════════════════════════════════════════
 phase_prompts() {
   section "📝 CONFIGURATION"
 
-  # 1. Domain
+  # Domain
   while true; do
-    read -rp "$(echo -e "${CYAN}Enter your domain (e.g. exorcise.ai): ${NC}")" DOMAIN
+    read -rp "$(echo -e "${CYAN}Domain (e.g. chat.claudie.id): ${NC}")" DOMAIN
     DOMAIN=$(echo "$DOMAIN" | sed 's|https\?://||;s|/$||')
     [ -n "$DOMAIN" ] && break
     warn "Domain cannot be empty."
   done
 
-  # 2. SSL Email
+  # SSL Email
   while true; do
-    read -rp "$(echo -e "${CYAN}Email for SSL certificate (Let's Encrypt): ${NC}")" SSL_EMAIL
+    read -rp "$(echo -e "${CYAN}Email for SSL (Let's Encrypt): ${NC}")" SSL_EMAIL
     [[ "$SSL_EMAIL" == *"@"*"."* ]] && break
-    warn "Please enter a valid email address."
+    warn "Enter a valid email."
   done
 
-  # 3. GitHub Repo
-  while true; do
-    read -rp "$(echo -e "${CYAN}GitHub repo URL (e.g. https://github.com/user/exorcise-ai): ${NC}")" REPO_URL
-    [[ "$REPO_URL" == https://github.com/* ]] && break
-    warn "URL must start with https://github.com/"
-  done
+  # Detect if we're already in a git repo with package.json
+  local CURRENT_DIR
+  CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-  # 4. Branch
-  read -rp "$(echo -e "${CYAN}Branch to deploy (default: main): ${NC}")" GIT_BRANCH
-  GIT_BRANCH=${GIT_BRANCH:-main}
-
-  # 5. Admin email
-  while true; do
-    read -rp "$(echo -e "${CYAN}Admin account email: ${NC}")" ADMIN_EMAIL
-    [[ "$ADMIN_EMAIL" == *"@"* ]] && break
-    warn "Please enter a valid email."
-  done
-
-  # 6. Admin password
-  while true; do
-    read -rsp "$(echo -e "${CYAN}Admin password (min 12 chars, hidden): ${NC}")" ADMIN_PASSWORD
+  if [ -f "$CURRENT_DIR/package.json" ] && [ -d "$CURRENT_DIR/.git" ]; then
     echo ""
-    if [ ${#ADMIN_PASSWORD} -lt 12 ]; then
-      warn "Password must be at least 12 characters."
-      continue
-    fi
-    read -rsp "$(echo -e "${CYAN}Confirm admin password: ${NC}")" ADMIN_PASSWORD_CONFIRM
-    echo ""
-    if [ "$ADMIN_PASSWORD" = "$ADMIN_PASSWORD_CONFIRM" ]; then
-      break
-    fi
-    warn "Passwords do not match."
-  done
-
-  # 7. Resend API Key
-  read -rp "$(echo -e "${CYAN}Resend API Key (press Enter to skip): ${NC}")" RESEND_API_KEY
-  RESEND_API_KEY=${RESEND_API_KEY:-}
-
-  # 8. Google Sheet ID
-  read -rp "$(echo -e "${CYAN}Google Sheet ID (press Enter to skip): ${NC}")" GOOGLE_SHEET_ID
-  GOOGLE_SHEET_ID=${GOOGLE_SHEET_ID:-}
-
-  # 9. Google SA JSON
-  read -rp "$(echo -e "${CYAN}Path to Google service account JSON file (press Enter to skip): ${NC}")" GOOGLE_SA_PATH
-  GOOGLE_SA_JSON=""
-  if [ -n "$GOOGLE_SA_PATH" ]; then
-    if [ -f "$GOOGLE_SA_PATH" ]; then
-      if python3 -c "import json; json.load(open('$GOOGLE_SA_PATH'))" 2>/dev/null; then
-        GOOGLE_SA_JSON=$(cat "$GOOGLE_SA_PATH" | tr -d '\n')
-        ok "Service account JSON validated"
-      else
-        warn "File is not valid JSON. Skipping."
-      fi
+    echo -e "  ${GREEN}✓ Detected project in:${NC} $CURRENT_DIR"
+    read -rp "$(echo -e "${CYAN}Use this directory? (Y/n): ${NC}")" USE_CURRENT
+    if [[ "$USE_CURRENT" =~ ^[nN]$ ]]; then
+      read -rp "$(echo -e "${CYAN}App directory (default: /var/www/exorcise-ai): ${NC}")" APP_DIR
+      APP_DIR=${APP_DIR:-/var/www/exorcise-ai}
+      # Need repo URL for cloning
+      while true; do
+        read -rp "$(echo -e "${CYAN}GitHub repo URL: ${NC}")" REPO_URL
+        [ -n "$REPO_URL" ] && break
+        warn "Repo URL required."
+      done
+      read -rp "$(echo -e "${CYAN}Branch (default: main): ${NC}")" GIT_BRANCH
+      GIT_BRANCH=${GIT_BRANCH:-main}
     else
-      warn "File not found: $GOOGLE_SA_PATH. Skipping."
+      APP_DIR="$CURRENT_DIR"
+      REPO_URL="ALREADY_CLONED"
     fi
+  else
+    read -rp "$(echo -e "${CYAN}App directory (default: /var/www/exorcise-ai): ${NC}")" APP_DIR
+    APP_DIR=${APP_DIR:-/var/www/exorcise-ai}
+    while true; do
+      read -rp "$(echo -e "${CYAN}GitHub repo URL: ${NC}")" REPO_URL
+      [ -n "$REPO_URL" ] && break
+      warn "Repo URL required."
+    done
+    read -rp "$(echo -e "${CYAN}Branch (default: main): ${NC}")" GIT_BRANCH
+    GIT_BRANCH=${GIT_BRANCH:-main}
+  fi
+
+  # Admin
+  while true; do
+    read -rp "$(echo -e "${CYAN}Admin email: ${NC}")" ADMIN_EMAIL
+    [[ "$ADMIN_EMAIL" == *"@"* ]] && break
+    warn "Enter a valid email."
+  done
+
+  while true; do
+    read -rsp "$(echo -e "${CYAN}Admin password (min 8 chars): ${NC}")" ADMIN_PASSWORD
+    echo ""
+    [ ${#ADMIN_PASSWORD} -ge 8 ] && break
+    warn "Password too short."
+  done
+
+  # Optional
+  read -rp "$(echo -e "${CYAN}Resend API Key (Enter to skip): ${NC}")" RESEND_API_KEY
+  read -rp "$(echo -e "${CYAN}Google Sheet ID (Enter to skip): ${NC}")" GOOGLE_SHEET_ID
+  read -rp "$(echo -e "${CYAN}Google SA JSON file path (Enter to skip): ${NC}")" GOOGLE_SA_PATH
+  if [ -n "$GOOGLE_SA_PATH" ] && [ -f "$GOOGLE_SA_PATH" ]; then
+    GOOGLE_SA_JSON=$(cat "$GOOGLE_SA_PATH" | tr -d '\n')
+    ok "Service account JSON loaded"
   fi
 
   # Summary
   echo ""
   echo -e "${PURPLE}╔══════════════════════════════════════════════════════╗${NC}"
-  echo -e "${PURPLE}║${NC}  ${BOLD}INSTALLATION SUMMARY${NC}                                ${PURPLE}║${NC}"
+  echo -e "${PURPLE}║  ${BOLD}INSTALLATION SUMMARY${NC}                                ${PURPLE}║${NC}"
   echo -e "${PURPLE}╠══════════════════════════════════════════════════════╣${NC}"
-  echo -e "${PURPLE}║${NC}  Domain:      ${CYAN}$DOMAIN${NC}"
-  echo -e "${PURPLE}║${NC}  SSL Email:   ${CYAN}$SSL_EMAIL${NC}"
-  echo -e "${PURPLE}║${NC}  Repo:        ${CYAN}$REPO_URL${NC}"
-  echo -e "${PURPLE}║${NC}  Branch:      ${CYAN}$GIT_BRANCH${NC}"
-  echo -e "${PURPLE}║${NC}  Admin:       ${CYAN}$ADMIN_EMAIL${NC}"
-  echo -e "${PURPLE}║${NC}  Resend:      ${CYAN}${RESEND_API_KEY:-(skipped)}${NC}"
-  echo -e "${PURPLE}║${NC}  Sheet ID:    ${CYAN}${GOOGLE_SHEET_ID:-(skipped)}${NC}"
-  echo -e "${PURPLE}║${NC}  SA JSON:     ${CYAN}${GOOGLE_SA_JSON:+(provided)}${GOOGLE_SA_JSON:-(skipped)}${NC}"
+  echo -e "${PURPLE}║${NC}  Domain:   ${CYAN}$DOMAIN${NC}"
+  echo -e "${PURPLE}║${NC}  App Dir:  ${CYAN}$APP_DIR${NC}"
+  echo -e "${PURPLE}║${NC}  Admin:    ${CYAN}$ADMIN_EMAIL${NC}"
+  if [ "$REPO_URL" = "ALREADY_CLONED" ]; then
+    echo -e "${PURPLE}║${NC}  Source:   ${GREEN}Already cloned (in-place)${NC}"
+  else
+    echo -e "${PURPLE}║${NC}  Repo:     ${CYAN}$REPO_URL ($GIT_BRANCH)${NC}"
+  fi
   echo -e "${PURPLE}╚══════════════════════════════════════════════════════╝${NC}"
   echo ""
 
-  read -rp "$(echo -e "${BOLD}Proceed with installation? (y/N): ${NC}")" CONFIRM
+  read -rp "$(echo -e "${BOLD}Proceed? (y/N): ${NC}")" CONFIRM
   if [[ ! "$CONFIRM" =~ ^[yY]$ ]]; then
-    echo "Installation cancelled."
+    echo "Cancelled."
     exit 0
   fi
-
-  mkdir -p "$(dirname "$LOG_FILE")"
-  echo "=== Exorcise AI Install Log — $(date) ===" > "$LOG_FILE"
 }
 
-# ── PHASE 2: System Update ──
+# ══════════════════════════════════════════════════════════════
+# PHASE 2: System Update
+# ══════════════════════════════════════════════════════════════
+phase_system() {
+  section "📦 SYSTEM PACKAGES"
+  log "Updating system..."
+  apt-get update -y >> "$LOG_FILE" 2>&1
+  apt-get upgrade -y >> "$LOG_FILE" 2>&1
+  ok "System updated"
 
-phase_system_update() {
-  section "📦 SYSTEM UPDATE & DEPENDENCIES"
-  run_with_spinner "Updating system packages" "apt-get update -y && apt-get upgrade -y"
-  run_with_spinner "Installing dependencies" "apt-get install -y curl git wget unzip build-essential ca-certificates gnupg lsb-release software-properties-common openssl ufw fail2ban"
+  log "Installing base dependencies..."
+  apt-get install -y curl git wget unzip build-essential ca-certificates gnupg \
+    lsb-release software-properties-common openssl ufw >> "$LOG_FILE" 2>&1
+  ok "Dependencies installed"
 }
 
-# ── PHASE 3: Node.js ──
-
+# ══════════════════════════════════════════════════════════════
+# PHASE 3: Node.js 20 (via NodeSource, NOT nvm)
+# ══════════════════════════════════════════════════════════════
 phase_nodejs() {
-  section "🟢 NODE.JS"
+  section "🟢 NODE.JS 20"
+
+  local CURRENT_NODE=""
   if command -v node &>/dev/null; then
-    log "Node.js already installed: $(node -v)"
+    CURRENT_NODE=$(node -v 2>/dev/null | sed 's/v//')
+    local MAJOR=${CURRENT_NODE%%.*}
+    if [ "$MAJOR" -ge 20 ] 2>/dev/null; then
+      ok "Node.js v$CURRENT_NODE already installed (>= v20)"
+    else
+      warn "Node.js v$CURRENT_NODE found but need v20+. Upgrading..."
+      log "Adding NodeSource repository for Node 20..."
+      curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >> "$LOG_FILE" 2>&1
+      apt-get install -y nodejs >> "$LOG_FILE" 2>&1
+      ok "Node.js upgraded to $(node -v)"
+    fi
   else
-    run "Installing nvm" "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash"
-    export NVM_DIR="$HOME/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-    run "Installing Node.js 20" "nvm install 20 && nvm alias default 20 && nvm use 20"
+    log "Installing Node.js 20 from NodeSource..."
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >> "$LOG_FILE" 2>&1
+    apt-get install -y nodejs >> "$LOG_FILE" 2>&1
+    ok "Node.js $(node -v) installed"
   fi
-  # Ensure nvm is loaded
-  export NVM_DIR="$HOME/.nvm"
-  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-  run "Installing global packages" "npm install -g pm2 prisma typescript ts-node"
+
+  # Verify
+  log "Node: $(node -v), npm: $(npm -v)"
+
+  # Install global packages
+  log "Installing PM2 globally..."
+  npm install -g pm2 >> "$LOG_FILE" 2>&1
+  ok "PM2 $(pm2 -v 2>/dev/null || echo 'installed')"
 }
 
-# ── PHASE 4: PostgreSQL ──
-
+# ══════════════════════════════════════════════════════════════
+# PHASE 4: PostgreSQL
+# ══════════════════════════════════════════════════════════════
 phase_postgresql() {
   section "🐘 POSTGRESQL"
 
-  DB_NAME="exorcise_ai"
-  DB_USER="exorcise_user"
   DB_PASSWORD=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 32)
 
   if command -v psql &>/dev/null; then
-    log "PostgreSQL already installed"
+    ok "PostgreSQL already installed"
   else
-    run "Adding PostgreSQL repo" "sh -c 'echo \"deb http://apt.postgresql.org/pub/repos/apt \$(lsb_release -cs)-pgdg main\" > /etc/apt/sources.list.d/pgdg.list' && wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -"
-    run_with_spinner "Installing PostgreSQL 16" "apt-get update -y && apt-get install -y postgresql-16 postgresql-client-16"
-    run "Enabling PostgreSQL" "systemctl enable postgresql && systemctl start postgresql"
+    log "Installing PostgreSQL..."
+    apt-get install -y postgresql postgresql-contrib >> "$LOG_FILE" 2>&1
+    systemctl enable postgresql >> "$LOG_FILE" 2>&1
+    systemctl start postgresql >> "$LOG_FILE" 2>&1
+    ok "PostgreSQL installed and started"
   fi
 
-  log "Creating database and user"
+  # Create DB user and database (ignore errors if already exists)
+  log "Creating database '$DB_NAME' and user '$DB_USER'..."
   sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASSWORD';" >> "$LOG_FILE" 2>&1 || true
+  sudo -u postgres psql -c "ALTER USER $DB_USER WITH PASSWORD '$DB_PASSWORD';" >> "$LOG_FILE" 2>&1 || true
   sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;" >> "$LOG_FILE" 2>&1 || true
   sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE $DB_NAME TO $DB_USER;" >> "$LOG_FILE" 2>&1 || true
-  ok "Database configured: $DB_NAME"
+  ok "Database ready: $DB_NAME"
 }
 
-# ── PHASE 5: Nginx ──
-
+# ══════════════════════════════════════════════════════════════
+# PHASE 5: Nginx
+# ══════════════════════════════════════════════════════════════
 phase_nginx() {
   section "🌐 NGINX"
-  if command -v nginx &>/dev/null; then
-    log "Nginx already installed"
+
+  if ! command -v nginx &>/dev/null; then
+    log "Installing Nginx..."
+    apt-get install -y nginx >> "$LOG_FILE" 2>&1
+    systemctl enable nginx >> "$LOG_FILE" 2>&1
+    systemctl start nginx >> "$LOG_FILE" 2>&1
+    ok "Nginx installed"
   else
-    run_with_spinner "Installing Nginx" "apt-get install -y nginx"
-    run "Enabling Nginx" "systemctl enable nginx && systemctl start nginx"
+    ok "Nginx already installed"
   fi
 
-  cat > /etc/nginx/sites-available/exorcise-ai << NGINX_EOF
+  log "Writing Nginx config for $DOMAIN..."
+  cat > /etc/nginx/sites-available/exorcise-ai << NGINXEOF
 server {
     listen 80;
     listen [::]:80;
     server_name $DOMAIN;
+
+    client_max_body_size 10M;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
@@ -281,38 +296,63 @@ server {
         proxy_read_timeout 86400;
     }
 }
-NGINX_EOF
+NGINXEOF
 
   ln -sf /etc/nginx/sites-available/exorcise-ai /etc/nginx/sites-enabled/
   rm -f /etc/nginx/sites-enabled/default
-  run "Testing Nginx config" "nginx -t"
-  run "Reloading Nginx" "systemctl reload nginx"
-}
 
-# ── PHASE 6: Clone Repo ──
-
-phase_clone_repo() {
-  section "📂 CLONE REPOSITORY"
-  if [ -d "$APP_DIR" ]; then
-    local backup="${APP_DIR}.bak.$(date +%s)"
-    warn "Existing app found. Backing up to $backup"
-    mv "$APP_DIR" "$backup"
+  if nginx -t >> "$LOG_FILE" 2>&1; then
+    systemctl reload nginx >> "$LOG_FILE" 2>&1
+    ok "Nginx configured and reloaded"
+  else
+    warn "Nginx config test failed — check manually"
   fi
-  run "Cloning repository" "git clone --branch $GIT_BRANCH $REPO_URL $APP_DIR"
 }
 
-# ── PHASE 7: Generate .env ──
+# ══════════════════════════════════════════════════════════════
+# PHASE 6: Clone / Prepare App
+# ══════════════════════════════════════════════════════════════
+phase_app() {
+  section "📂 APPLICATION"
 
-phase_generate_env() {
-  section "🔑 GENERATING SECRETS & .ENV"
+  if [ "$REPO_URL" = "ALREADY_CLONED" ]; then
+    ok "Using existing project at $APP_DIR"
+  else
+    if [ -d "$APP_DIR" ] && [ -f "$APP_DIR/package.json" ]; then
+      warn "Directory exists. Pulling latest..."
+      cd "$APP_DIR"
+      git pull origin "$GIT_BRANCH" >> "$LOG_FILE" 2>&1 || true
+      ok "Code updated"
+    else
+      log "Cloning repository..."
+      git clone --branch "$GIT_BRANCH" "$REPO_URL" "$APP_DIR" >> "$LOG_FILE" 2>&1
+      ok "Repository cloned to $APP_DIR"
+    fi
+  fi
+}
 
+# ══════════════════════════════════════════════════════════════
+# PHASE 7: Generate .env
+# ══════════════════════════════════════════════════════════════
+phase_env() {
+  section "🔑 ENVIRONMENT VARIABLES"
+
+  local BETTER_AUTH_SECRET
   BETTER_AUTH_SECRET=$(openssl rand -base64 48 | tr -dc 'a-zA-Z0-9' | head -c 48)
+  local TOTP_ENCRYPTION_KEY
   TOTP_ENCRYPTION_KEY=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 32)
+  local ADMIN_SYNC_SECRET
   ADMIN_SYNC_SECRET=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 24)
 
-  cat > "$APP_DIR/.env" << ENV_EOF
+  log "Generating .env with secure secrets..."
+
+  cat > "$APP_DIR/.env" << ENVEOF
+# ═══ Exorcise AI — Production Environment ═══
+# Generated: $(date)
+
 # App
 NEXT_PUBLIC_APP_URL=https://$DOMAIN
+NEXT_PUBLIC_APP_NAME="Exorcise AI"
 NODE_ENV=production
 
 # Database
@@ -327,10 +367,8 @@ ADMIN_EMAIL=$ADMIN_EMAIL
 ADMIN_PASSWORD=$ADMIN_PASSWORD
 ADMIN_SYNC_SECRET=$ADMIN_SYNC_SECRET
 
-# Email (Resend)
+# Email
 RESEND_API_KEY=$RESEND_API_KEY
-
-# SMTP fallback
 SMTP_HOST=
 SMTP_PORT=587
 SMTP_USER=
@@ -345,88 +383,113 @@ TOTP_ISSUER=Exorcise AI
 GOOGLE_SHEET_ID=$GOOGLE_SHEET_ID
 GOOGLE_SERVICE_ACCOUNT_JSON=$GOOGLE_SA_JSON
 SHEET_SYNC_INTERVAL_HOURS=6
-ENV_EOF
+ENVEOF
 
   chmod 600 "$APP_DIR/.env"
-  chown root:root "$APP_DIR/.env"
-  ok "Environment file created"
+  ok ".env created with auto-generated secrets"
+
+  # Save secrets to report
+  REPORT_SECRETS="BETTER_AUTH_SECRET=$BETTER_AUTH_SECRET
+TOTP_ENCRYPTION_KEY=$TOTP_ENCRYPTION_KEY
+ADMIN_SYNC_SECRET=$ADMIN_SYNC_SECRET
+DB_PASSWORD=$DB_PASSWORD"
 }
 
-# ── PHASE 8: Build ──
-
+# ══════════════════════════════════════════════════════════════
+# PHASE 8: Build App
+# ══════════════════════════════════════════════════════════════
 phase_build() {
-  section "🔨 INSTALL & BUILD"
-  export NVM_DIR="$HOME/.nvm"
-  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+  section "🔨 BUILD"
 
   cd "$APP_DIR"
-  run_with_spinner "Installing npm dependencies" "npm install --production=false"
-  run "Generating Prisma client" "npx prisma generate"
-  run "Running database migrations" "npx prisma migrate deploy"
-  run_with_spinner "Building Next.js application" "npm run build"
+
+  log "Installing npm dependencies..."
+  npm install >> "$LOG_FILE" 2>&1
+  ok "Dependencies installed"
+
+  log "Generating Prisma client..."
+  npx prisma generate >> "$LOG_FILE" 2>&1
+  ok "Prisma client generated"
+
+  log "Running database migrations..."
+  npx prisma migrate deploy >> "$LOG_FILE" 2>&1
+  ok "Migrations applied"
+
+  log "Seeding admin user..."
+  npx tsx scripts/seed-admin.ts >> "$LOG_FILE" 2>&1 || npx ts-node scripts/seed-admin.ts >> "$LOG_FILE" 2>&1 || {
+    warn "Seed script failed — you can run it manually later"
+  }
+  ok "Admin user seeded"
+
+  log "Building Next.js for production (this takes a minute)..."
+  npm run build >> "$LOG_FILE" 2>&1
+  ok "Production build complete"
 }
 
-# ── PHASE 9: Seed Admin ──
-
-phase_seed_admin() {
-  section "👤 SEED ADMIN ACCOUNT"
-  export NVM_DIR="$HOME/.nvm"
-  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-  cd "$APP_DIR"
-  run "Seeding admin user" "npx ts-node scripts/seed-admin.ts"
-}
-
-# ── PHASE 10: PM2 ──
-
+# ══════════════════════════════════════════════════════════════
+# PHASE 9: PM2
+# ══════════════════════════════════════════════════════════════
 phase_pm2() {
   section "🚀 PM2 PROCESS MANAGER"
-  export NVM_DIR="$HOME/.nvm"
-  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
-  cat > "$APP_DIR/ecosystem.config.js" << 'PM2_EOF'
+  cd "$APP_DIR"
+
+  # Create ecosystem file
+  cat > "$APP_DIR/ecosystem.config.cjs" << 'PM2EOF'
 module.exports = {
   apps: [{
     name: 'exorcise-ai',
-    script: 'npm',
+    script: 'node_modules/.bin/next',
     args: 'start',
-    cwd: '/var/www/exorcise-ai',
-    instances: 'max',
-    exec_mode: 'cluster',
-    env: { NODE_ENV: 'production', PORT: 3000 },
-    error_file: '/var/log/exorcise-ai/error.log',
-    out_file: '/var/log/exorcise-ai/out.log',
-    log_date_format: 'YYYY-MM-DD HH:mm:ss',
+    env: {
+      NODE_ENV: 'production',
+      PORT: 3000
+    },
+    instances: 1,
+    exec_mode: 'fork',
+    max_memory_restart: '500M',
     restart_delay: 3000,
-    max_restarts: 10
+    max_restarts: 10,
+    log_date_format: 'YYYY-MM-DD HH:mm:ss'
   }]
-}
-PM2_EOF
+};
+PM2EOF
 
   mkdir -p /var/log/exorcise-ai
-  cd "$APP_DIR"
 
-  # Stop existing if running
+  # Stop existing
   pm2 delete exorcise-ai >> "$LOG_FILE" 2>&1 || true
-  run "Starting application with PM2" "pm2 start ecosystem.config.js"
-  run "Saving PM2 process list" "pm2 save"
 
-  log "Setting up PM2 startup"
+  log "Starting app with PM2..."
+  cd "$APP_DIR"
+  pm2 start ecosystem.config.cjs >> "$LOG_FILE" 2>&1
+  ok "PM2 started"
+
+  pm2 save >> "$LOG_FILE" 2>&1
   pm2 startup systemd -u root --hp /root >> "$LOG_FILE" 2>&1 || true
   ok "PM2 startup configured"
 
-  # Health check
-  sleep 5
-  if curl -sf http://localhost:3000 > /dev/null 2>&1; then
-    ok "Health check passed — app is running"
-  else
-    warn "Health check failed — app may still be starting. Check: pm2 logs exorcise-ai"
-  fi
+  # Health check (wait for startup)
+  log "Waiting for app to start..."
+  sleep 8
+
+  local RETRIES=0
+  while [ $RETRIES -lt 5 ]; do
+    if curl -sf http://localhost:3000 > /dev/null 2>&1; then
+      ok "Health check PASSED — app is live!"
+      return 0
+    fi
+    RETRIES=$((RETRIES + 1))
+    sleep 3
+  done
+  warn "Health check failed. Check: pm2 logs exorcise-ai"
 }
 
-# ── PHASE 11: Firewall ──
-
+# ══════════════════════════════════════════════════════════════
+# PHASE 10: Firewall
+# ══════════════════════════════════════════════════════════════
 phase_firewall() {
-  section "🔥 FIREWALL (UFW)"
+  section "🔥 FIREWALL"
   ufw --force reset >> "$LOG_FILE" 2>&1
   ufw default deny incoming >> "$LOG_FILE" 2>&1
   ufw default allow outgoing >> "$LOG_FILE" 2>&1
@@ -434,160 +497,124 @@ phase_firewall() {
   ufw allow 80/tcp >> "$LOG_FILE" 2>&1
   ufw allow 443/tcp >> "$LOG_FILE" 2>&1
   ufw --force enable >> "$LOG_FILE" 2>&1
-  ok "Firewall configured (SSH, HTTP, HTTPS allowed)"
+  ok "UFW enabled (SSH, HTTP, HTTPS)"
 }
 
-# ── PHASE 12: SSL ──
-
+# ══════════════════════════════════════════════════════════════
+# PHASE 11: SSL
+# ══════════════════════════════════════════════════════════════
 phase_ssl() {
-  section "🔒 SSL CERTIFICATE (Let's Encrypt)"
+  section "🔒 SSL (Let's Encrypt)"
 
   if ! command -v certbot &>/dev/null; then
-    run_with_spinner "Installing Certbot" "apt-get install -y certbot python3-certbot-nginx"
+    log "Installing Certbot..."
+    apt-get install -y certbot python3-certbot-nginx >> "$LOG_FILE" 2>&1
+    ok "Certbot installed"
   fi
 
-  log "Requesting SSL certificate for $DOMAIN"
-  if certbot --nginx --non-interactive --agree-tos --email "$SSL_EMAIL" --domains "$DOMAIN" --redirect >> "$LOG_FILE" 2>&1; then
-    ok "SSL certificate installed"
-    systemctl enable certbot.timer >> "$LOG_FILE" 2>&1 || true
-    systemctl start certbot.timer >> "$LOG_FILE" 2>&1 || true
-    (crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet") | sort -u | crontab -
+  log "Requesting certificate for $DOMAIN..."
+  if certbot --nginx --non-interactive --agree-tos --email "$SSL_EMAIL" \
+     --domains "$DOMAIN" --redirect >> "$LOG_FILE" 2>&1; then
+    ok "SSL certificate installed!"
+    # Auto-renewal cron
+    (crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet") | sort -u | crontab - 2>/dev/null
     ok "Auto-renewal configured"
   else
-    warn "SSL certificate failed. Your DNS may not be pointing to this server yet."
+    warn "SSL failed — your DNS might not point to this server yet."
+    local SERVER_IP
     SERVER_IP=$(curl -s https://api.ipify.org 2>/dev/null || echo "unknown")
-    echo -e "  ${CYAN}Server IP: $SERVER_IP${NC}"
-    echo -e "  ${CYAN}Point your DNS A record for $DOMAIN to $SERVER_IP${NC}"
-    echo -e "  ${CYAN}Then run: certbot --nginx -d $DOMAIN${NC}"
+    echo ""
+    echo -e "  ${CYAN}Your server IP: $SERVER_IP${NC}"
+    echo -e "  ${CYAN}Set DNS A record: $DOMAIN → $SERVER_IP${NC}"
+    echo -e "  ${CYAN}Then run: sudo certbot --nginx -d $DOMAIN${NC}"
+    echo ""
   fi
 }
 
-# ── PHASE 13: Security Headers ──
-
-phase_security_headers() {
-  section "🛡️ NGINX SECURITY HEADERS"
-
-  # Check if SSL block exists and add headers
-  local NGINX_CONF="/etc/nginx/sites-available/exorcise-ai"
-  if grep -q "443" "$NGINX_CONF" 2>/dev/null; then
-    # Add security headers to the SSL server block
-    sed -i '/proxy_read_timeout 86400;/a\
-\
-        add_header X-Frame-Options "SAMEORIGIN" always;\
-        add_header X-Content-Type-Options "nosniff" always;\
-        add_header X-XSS-Protection "1; mode=block" always;\
-        add_header Referrer-Policy "strict-origin-when-cross-origin" always;\
-        add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;\
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;' "$NGINX_CONF" 2>/dev/null || true
-  fi
-
-  # Add gzip and client_max_body_size to http context
-  if ! grep -q "client_max_body_size" /etc/nginx/nginx.conf 2>/dev/null; then
-    sed -i '/http {/a\
-    client_max_body_size 10M;\
-    gzip on;\
-    gzip_vary on;\
-    gzip_proxied any;\
-    gzip_comp_level 6;\
-    gzip_types text/plain text/css application/json application/javascript text/xml;' /etc/nginx/nginx.conf 2>/dev/null || true
-  fi
-
-  if nginx -t >> "$LOG_FILE" 2>&1; then
-    systemctl reload nginx >> "$LOG_FILE" 2>&1
-    ok "Security headers applied"
-  else
-    warn "Nginx config test failed after adding headers. Skipping reload."
-  fi
-}
-
-# ── PHASE 14: Install Report ──
-
+# ══════════════════════════════════════════════════════════════
+# PHASE 12: Report
+# ══════════════════════════════════════════════════════════════
 phase_report() {
-  section "📄 SAVING INSTALL REPORT"
+  section "📄 INSTALL REPORT"
 
-  cat > /root/exorcise-ai-install-report.txt << REPORT_EOF
-═══════════════════════════════════════════════════
-  👻 EXORCISE AI — Installation Report
+  local REPORT="/root/exorcise-ai-credentials.txt"
+
+  cat > "$REPORT" << REPORTEOF
+═══════════════════════════════════════════════════════
+  👻 EXORCISE AI — Installation Credentials
   Generated: $(date)
-═══════════════════════════════════════════════════
+═══════════════════════════════════════════════════════
 
-🌐 DEPLOYMENT
-   URL:              https://$DOMAIN
-   Admin Panel:      https://$DOMAIN/admin
-   App Directory:    $APP_DIR
-   Log Directory:    /var/log/exorcise-ai/
-   Install Log:      $LOG_FILE
+URL:           https://$DOMAIN
+Admin Panel:   https://$DOMAIN/admin
+App Directory: $APP_DIR
 
-🗄️ DATABASE
-   Name:             $DB_NAME
-   User:             $DB_USER
-   Password:         $DB_PASSWORD
-   Connection:       postgresql://$DB_USER:$DB_PASSWORD@localhost:5432/$DB_NAME
+DATABASE:
+  Name:     $DB_NAME
+  User:     $DB_USER
+  Password: $DB_PASSWORD
+  URL:      postgresql://$DB_USER:$DB_PASSWORD@localhost:5432/$DB_NAME
 
-🔑 SECRETS (KEEP SAFE — DELETE THIS FILE AFTER SAVING)
-   BETTER_AUTH_SECRET:   $BETTER_AUTH_SECRET
-   TOTP_ENCRYPTION_KEY:  $TOTP_ENCRYPTION_KEY
-   ADMIN_SYNC_SECRET:    $ADMIN_SYNC_SECRET
+SECRETS:
+$REPORT_SECRETS
 
-👤 ADMIN
-   Email:            $ADMIN_EMAIL
+ADMIN:
+  Email:    $ADMIN_EMAIL
 
-📋 USEFUL COMMANDS
-   pm2 status                          # Check app status
-   pm2 logs exorcise-ai                # View logs
-   pm2 restart exorcise-ai             # Restart app
-   pm2 reload exorcise-ai              # Zero-downtime reload
-   systemctl status nginx              # Nginx status
-   certbot renew --dry-run             # Test SSL renewal
-   sudo -u postgres psql               # Database shell
-   cd $APP_DIR && npx prisma studio    # Database GUI
+COMMANDS:
+  pm2 status                    # App status
+  pm2 logs exorcise-ai          # View logs
+  pm2 restart exorcise-ai       # Restart
+  sudo certbot --nginx -d $DOMAIN  # Setup SSL (if failed)
+  cd $APP_DIR && npx prisma studio  # DB GUI
 
-═══════════════════════════════════════════════════
-REPORT_EOF
+═══════════════════════════════════════════════════════
+  ⚠ SAVE THESE CREDENTIALS AND DELETE THIS FILE!
+  rm /root/exorcise-ai-credentials.txt
+═══════════════════════════════════════════════════════
+REPORTEOF
 
-  chmod 600 /root/exorcise-ai-install-report.txt
-  ok "Report saved to /root/exorcise-ai-install-report.txt"
+  chmod 600 "$REPORT"
+  ok "Credentials saved to $REPORT"
 }
 
-# ── PHASE 15: Final Banner ──
-
-phase_final_banner() {
+# ══════════════════════════════════════════════════════════════
+# DONE!
+# ══════════════════════════════════════════════════════════════
+phase_done() {
   echo ""
   echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
   echo -e "${GREEN}║${NC}                                                      ${GREEN}║${NC}"
   echo -e "${GREEN}║${NC}   👻  ${BOLD}EXORCISE AI — INSTALLATION COMPLETE!${NC}          ${GREEN}║${NC}"
   echo -e "${GREEN}║${NC}                                                      ${GREEN}║${NC}"
-  echo -e "${GREEN}║${NC}   🌐 Live URL:    ${CYAN}https://$DOMAIN${NC}"
-  echo -e "${GREEN}║${NC}   🏛️  Admin:      ${CYAN}https://$DOMAIN/admin${NC}"
-  echo -e "${GREEN}║${NC}   📄 Report:      ${CYAN}/root/exorcise-ai-install-report.txt${NC}"
+  echo -e "${GREEN}║${NC}   🌐 ${CYAN}https://$DOMAIN${NC}"
+  echo -e "${GREEN}║${NC}   🏛️  ${CYAN}https://$DOMAIN/admin${NC}"
+  echo -e "${GREEN}║${NC}   📄 ${CYAN}/root/exorcise-ai-credentials.txt${NC}"
   echo -e "${GREEN}║${NC}                                                      ${GREEN}║${NC}"
-  echo -e "${GREEN}║${NC}   ${YELLOW}⚠ Save your secrets and delete the report file!${NC}   ${GREEN}║${NC}"
-  echo -e "${GREEN}║${NC}                                                      ${GREEN}║${NC}"
-  echo -e "${GREEN}║${NC}   ${PURPLE}\"Summon the answer. Banish the unknown.\"${NC}           ${GREEN}║${NC}"
+  echo -e "${GREEN}║${NC}   ${YELLOW}⚠ Save credentials then delete the file!${NC}         ${GREEN}║${NC}"
   echo -e "${GREEN}║${NC}                                                      ${GREEN}║${NC}"
   echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
   echo ""
 }
 
-# ── MAIN ──
-
+# ══════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════
 main() {
   phase_preflight
   phase_prompts
-  phase_system_update
+  phase_system
   phase_nodejs
   phase_postgresql
   phase_nginx
-  phase_clone_repo
-  phase_generate_env
+  phase_app
+  phase_env
   phase_build
-  phase_seed_admin
   phase_pm2
   phase_firewall
   phase_ssl
-  phase_security_headers
   phase_report
-  phase_final_banner
+  phase_done
 }
 
 main "$@"
